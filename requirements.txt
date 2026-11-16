@@ -1,0 +1,8 @@
+
+# Smart Posture & Screen-Time Monitor
+# Python 3.10 or 3.11
+
+opencv-python==4.10.0.84
+mediapipe==0.10.21
+numpy==1.26.4
+plyer==2.1.0
