@@ -3,7 +3,12 @@ import cv2
 import mediapipe as mp
 import math
 from collections import deque
+from timer import ScreenTimeManager
 from time_alert import DistanceAlertManager
+from posture import analyze_posture
+from exercise_tips import get_exercise_tip, get_break_exercise
+from data_logger import log_data
+
 
 # -----------------------------
 # PROJECT CONFIGURATION
@@ -15,8 +20,8 @@ KNOWN_DISTANCE_CM = 50
 CALIBRATION_FRAMES = 30
 SMOOTHING_WINDOW = 10
 
-# Store the latest 10 distance readings
 distance_history = deque(maxlen=SMOOTHING_WINDOW)
+
 
 # -----------------------------
 # INITIALIZE MEDIAPIPE
@@ -31,6 +36,7 @@ face_mesh = mp_face_mesh.FaceMesh(
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5
 )
+
 
 # -----------------------------
 # INITIALIZE WEBCAM
@@ -48,6 +54,7 @@ focal_length = None
 calibration_samples = []
 collecting = False
 
+
 # -----------------------------
 # INITIALIZE DISTANCE ALERTS
 # -----------------------------
@@ -59,11 +66,27 @@ alert_manager = DistanceAlertManager(
     cooldown_seconds=30
 )
 
+
+# -----------------------------
+# DAY 7: INITIALIZE SCREEN TIMER
+# -----------------------------
+
+screen_timer = ScreenTimeManager(
+    break_interval_minutes=.1
+)
+
+
+# -----------------------------
+# PROJECT START
+# -----------------------------
+
 print("SMART POSTURE MONITOR")
 print("---------------------")
 print("Sit exactly 50 cm from webcam.")
 print("Press C to calibrate.")
+print("Press B after taking a break to reset timer.")
 print("Press Q to exit.")
+
 
 # -----------------------------
 # MAIN LOOP
@@ -85,12 +108,17 @@ while True:
 
     results = face_mesh.process(rgb_frame)
 
+    # Initialize frame variables
     iris_width = None
     raw_distance = None
     smooth_distance = None
 
-    # Default status for each frame
+    head_tilt_angle = None
+    head_status = "WAITING FOR FACE"
+    lean_status = "WAITING FOR DISTANCE"
+
     distance_status = "WAITING FOR FACE"
+
 
     # -----------------------------
     # FACE AND IRIS DETECTION
@@ -106,7 +134,6 @@ while True:
         p474 = face_landmarks.landmark[474]
         p476 = face_landmarks.landmark[476]
 
-        # Calculate iris width
         P1 = math.hypot(
             (p471.x - p469.x) * width,
             (p471.y - p469.y) * height
@@ -119,7 +146,11 @@ while True:
 
         iris_width = (P1 + P2) / 2
 
-        # Draw iris landmarks
+
+        # -----------------------------
+        # DRAW IRIS LANDMARKS
+        # -----------------------------
+
         for index in [469, 471, 474, 476]:
 
             landmark = face_landmarks.landmark[index]
@@ -134,6 +165,7 @@ while True:
                 (0, 255, 0),
                 -1
             )
+
 
         # -----------------------------
         # CALIBRATION
@@ -156,12 +188,16 @@ while True:
 
                 collecting = False
 
-                # Clear previous measurements
                 distance_history.clear()
 
                 print("\nCalibration successful!")
-                print(f"Average iris width: {average_width:.2f} px")
-                print(f"Focal length: {focal_length:.2f} px")
+                print(
+                    f"Average iris width: {average_width:.2f} px"
+                )
+                print(
+                    f"Focal length: {focal_length:.2f} px"
+                )
+
 
         # -----------------------------
         # DISTANCE ESTIMATION
@@ -178,16 +214,27 @@ while True:
                 IRIS_WIDTH_CM * focal_length
             ) / iris_width
 
-            # Accept plausible measurements
             if 15 <= raw_distance <= 150:
 
                 distance_history.append(raw_distance)
 
-                # Calculate moving average
                 smooth_distance = (
                     sum(distance_history)
                     / len(distance_history)
                 )
+
+
+        # -----------------------------
+        # DAY 6: POSTURE ANALYSIS
+        # -----------------------------
+
+        head_tilt_angle, head_status, lean_status = analyze_posture(
+            face_landmarks,
+            width,
+            height,
+            smooth_distance
+        )
+
 
     # -----------------------------
     # DAY 5: DISTANCE ALERT SYSTEM
@@ -197,8 +244,36 @@ while True:
         smooth_distance
     )
 
+
     # -----------------------------
-    # DISPLAY INFORMATION
+    # DAY 7: SCREEN-TIME TRACKING
+    # -----------------------------
+
+    screen_time = screen_timer.get_screen_time()
+
+    break_due = screen_timer.check_break_time()
+
+    formatted_screen_time = screen_timer.format_time(
+        screen_time
+    )
+
+
+    # -----------------------------
+    # DAY 8: CSV DATA LOGGING
+    # -----------------------------
+
+    log_data(
+        distance=smooth_distance,
+        head_tilt=head_tilt_angle,
+        head_status=head_status,
+        lean_status=lean_status,
+        screen_time=screen_time,
+        break_reminder=break_due
+    )
+
+
+    # -----------------------------
+    # DISPLAY IRIS WIDTH
     # -----------------------------
 
     if iris_width is not None:
@@ -212,6 +287,11 @@ while True:
             (0, 255, 255),
             2
         )
+
+
+    # -----------------------------
+    # DISPLAY CALIBRATION
+    # -----------------------------
 
     if collecting:
 
@@ -271,24 +351,21 @@ while True:
             2
         )
 
+
     # -----------------------------
     # DISPLAY DISTANCE STATUS
     # -----------------------------
 
     if distance_status == "NORMAL":
-
         status_color = (0, 255, 0)
 
     elif distance_status == "TOO CLOSE":
-
         status_color = (0, 0, 255)
 
     elif distance_status == "TOO FAR":
-
         status_color = (0, 165, 255)
 
     else:
-
         status_color = (255, 255, 255)
 
     cv2.putText(
@@ -301,7 +378,160 @@ while True:
         2
     )
 
+
+    # -----------------------------
+    # DAY 6: DISPLAY HEAD TILT
+    # -----------------------------
+
+    if head_tilt_angle is not None:
+
+        tilt_text = (
+            f"Head Tilt: {head_tilt_angle:.1f} deg"
+            f" | {head_status}"
+        )
+
+    else:
+
+        tilt_text = "Head Tilt: Unavailable"
+
+    if head_status == "HEAD TILTED":
+        tilt_color = (0, 0, 255)
+
+    elif head_status == "NORMAL":
+        tilt_color = (0, 255, 0)
+
+    else:
+        tilt_color = (255, 255, 255)
+
+    cv2.putText(
+        frame,
+        tilt_text,
+        (20, 195),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        tilt_color,
+        2
+    )
+
+
+    # -----------------------------
+    # DAY 6: DISPLAY FORWARD LEAN
+    # -----------------------------
+
+    if lean_status == "LEANING FORWARD":
+        lean_color = (0, 0, 255)
+
+    elif lean_status == "NORMAL":
+        lean_color = (0, 255, 0)
+
+    else:
+        lean_color = (255, 255, 255)
+
+    cv2.putText(
+        frame,
+        f"Posture: {lean_status}",
+        (20, 235),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        lean_color,
+        2
+    )
+
+
+    # -----------------------------
+    # DAY 7: DISPLAY SCREEN TIME
+    # -----------------------------
+
+    cv2.putText(
+        frame,
+        f"Screen Time: {formatted_screen_time}",
+        (20, 275),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255, 255, 255),
+        2
+    )
+
+
+    # -----------------------------
+    # DAY 7: DISPLAY BREAK REMINDER
+    # -----------------------------
+
+    if break_due:
+
+        cv2.putText(
+            frame,
+            "BREAK TIME! Take a short break.",
+            (20, 315),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (0, 0, 255),
+            2
+        )
+
+
+    # -----------------------------
+    # DAY 8: EXERCISE RECOMMENDATIONS
+    # -----------------------------
+
+    if head_status == "HEAD TILTED" or lean_status == "LEANING FORWARD":
+
+        exercise_tip = get_exercise_tip(
+            head_status,
+            lean_status
+        )
+
+        cv2.putText(
+            frame,
+            "Exercise Recommendation:",
+            (20, 355),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 165, 255),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            exercise_tip[:55],
+            (20, 390),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 255),
+            2
+        )
+
+    elif break_due:
+
+        break_tip = get_break_exercise()
+
+        cv2.putText(
+            frame,
+            "Break Exercise:",
+            (20, 355),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 165, 255),
+            2
+        )
+
+        cv2.putText(
+            frame,
+            break_tip[:55],
+            (20, 390),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 255),
+            2
+        )
+
+
+    # -----------------------------
+    # DISPLAY WEBCAM
+    # -----------------------------
+
     cv2.imshow("Smart Posture Monitor", frame)
+
 
     # -----------------------------
     # KEYBOARD CONTROLS
@@ -324,8 +554,15 @@ while True:
 
             print("Face not detected. Try again.")
 
+    elif key == ord('b'):
+
+        screen_timer.reset_timer()
+
+        print("Break completed! Screen-time timer reset.")
+
     elif key == ord('q'):
         break
+
 
 # -----------------------------
 # CLEANUP
