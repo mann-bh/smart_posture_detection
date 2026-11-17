@@ -1,12 +1,13 @@
-
 import cv2
 import mediapipe as mp
 import math
+import time
 from collections import deque
+
 from timer import ScreenTimeManager
 from time_alert import DistanceAlertManager
 from posture import analyze_posture
-from exercise_tips import get_exercise_tip, get_break_exercise
+from exercise_tips import get_break_exercise
 from data_logger import log_data
 
 
@@ -18,9 +19,22 @@ IRIS_WIDTH_CM = 1.17
 KNOWN_DISTANCE_CM = 50
 
 CALIBRATION_FRAMES = 30
-SMOOTHING_WINDOW = 10
 
+# Keep the most recent 15 valid distance readings.
+SMOOTHING_WINDOW = 15
 distance_history = deque(maxlen=SMOOTHING_WINDOW)
+
+# Save one CSV record every 5 seconds instead of every webcam frame.
+LOG_INTERVAL_SECONDS = 5
+last_log_time = 0
+
+# Hysteresis state: separate thresholds prevent rapid status switching.
+stable_head_status = "NORMAL"
+stable_lean_status = "NORMAL"
+
+# Break exercise is selected once when a break first becomes due.
+last_break_due = False
+break_tip = None
 
 
 # -----------------------------
@@ -50,7 +64,6 @@ if not cap.isOpened():
     raise SystemExit
 
 focal_length = None
-
 calibration_samples = []
 collecting = False
 
@@ -71,8 +84,10 @@ alert_manager = DistanceAlertManager(
 # DAY 7: INITIALIZE SCREEN TIMER
 # -----------------------------
 
+# Your uploaded code used 0.5 minutes for testing.
+# Change this to 20 when you finish testing.
 screen_timer = ScreenTimeManager(
-    break_interval_minutes=.1
+    break_interval_minutes=0.5
 )
 
 
@@ -134,6 +149,7 @@ while True:
         p474 = face_landmarks.landmark[474]
         p476 = face_landmarks.landmark[476]
 
+        # Calculate iris width
         P1 = math.hypot(
             (p471.x - p469.x) * width,
             (p471.y - p469.y) * height
@@ -214,14 +230,15 @@ while True:
                 IRIS_WIDTH_CM * focal_length
             ) / iris_width
 
+            # Accept plausible measurements
             if 15 <= raw_distance <= 150:
 
                 distance_history.append(raw_distance)
 
-                smooth_distance = (
-                    sum(distance_history)
-                    / len(distance_history)
-                )
+                # Median filter: less sensitive to sudden outlier readings.
+                sorted_distances = sorted(distance_history)
+                middle_index = len(sorted_distances) // 2
+                smooth_distance = sorted_distances[middle_index]
 
 
         # -----------------------------
@@ -234,6 +251,34 @@ while True:
             height,
             smooth_distance
         )
+
+        # -----------------------------
+        # POSTURE STATUS STABILIZATION
+        # -----------------------------
+
+        # Head tilt hysteresis:
+        # Enter warning above 12 degrees; clear below 8 degrees.
+        if head_tilt_angle is not None:
+
+            if abs(head_tilt_angle) > 12:
+                stable_head_status = "HEAD TILTED"
+
+            elif abs(head_tilt_angle) < 8:
+                stable_head_status = "NORMAL"
+
+            head_status = stable_head_status
+
+        # Forward-lean hysteresis:
+        # Enter below 41 cm; clear above 44 cm.
+        if smooth_distance is not None:
+
+            if smooth_distance < 41:
+                stable_lean_status = "LEANING FORWARD"
+
+            elif smooth_distance > 44:
+                stable_lean_status = "NORMAL"
+
+            lean_status = stable_lean_status
 
 
     # -----------------------------
@@ -259,17 +304,36 @@ while True:
 
 
     # -----------------------------
+    # DAY 8: SELECT BREAK EXERCISE ONCE
+    # -----------------------------
+
+    if break_due and not last_break_due:
+        break_tip = get_break_exercise()
+
+    elif not break_due:
+        break_tip = None
+
+    last_break_due = break_due
+
+
+    # -----------------------------
     # DAY 8: CSV DATA LOGGING
     # -----------------------------
 
-    log_data(
-        distance=smooth_distance,
-        head_tilt=head_tilt_angle,
-        head_status=head_status,
-        lean_status=lean_status,
-        screen_time=screen_time,
-        break_reminder=break_due
-    )
+    current_time = time.time()
+
+    if current_time - last_log_time >= LOG_INTERVAL_SECONDS:
+
+        log_data(
+            distance=smooth_distance,
+            head_tilt=head_tilt_angle,
+            head_status=head_status,
+            lean_status=lean_status,
+            screen_time=screen_time,
+            break_reminder=break_due
+        )
+
+        last_log_time = current_time
 
 
     # -----------------------------
@@ -331,7 +395,7 @@ while True:
 
         cv2.putText(
             frame,
-            f"Smooth Distance: {smooth_distance:.2f} cm",
+            f"Smooth Distance: {smooth_distance:.1f} cm",
             (20, 115),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
@@ -471,43 +535,14 @@ while True:
 
 
     # -----------------------------
-    # DAY 8: EXERCISE RECOMMENDATIONS
+    # DAY 8: DISPLAY BREAK EXERCISE ONLY
     # -----------------------------
 
-    if head_status == "HEAD TILTED" or lean_status == "LEANING FORWARD":
-
-        exercise_tip = get_exercise_tip(
-            head_status,
-            lean_status
-        )
+    if break_due and break_tip is not None:
 
         cv2.putText(
             frame,
-            "Exercise Recommendation:",
-            (20, 355),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 165, 255),
-            2
-        )
-
-        cv2.putText(
-            frame,
-            exercise_tip[:55],
-            (20, 390),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 255, 255),
-            2
-        )
-
-    elif break_due:
-
-        break_tip = get_break_exercise()
-
-        cv2.putText(
-            frame,
-            "Break Exercise:",
+            "BREAK EXERCISE:",
             (20, 355),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
